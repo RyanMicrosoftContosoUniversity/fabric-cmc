@@ -14,6 +14,25 @@
 # # Central Management Console Back End
 # Back End Connectivity for Central Management Console
 
+# PARAMETERS CELL ********************
+
+kv_uri = 'https://kvfabricprodeus2rh.vault.azure.net/'
+client_id_secret = 'fuam-spn-client-id'
+tenant_id_secret = 'fuam-spn-tenant-id'
+client_secret_name = 'fuam-spn-secret'
+
+workspace_id = 'a046cf0f-8dca-4b61-b95e-7adf68fb4b0a'
+dataset_id = '708da792-a344-4079-b205-61c587a51600'
+
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
 # CELL ********************
 
 import requests
@@ -100,7 +119,7 @@ def start_dataset_refresh(workspace_id:str, dataset_id:str, api_token:str):
 
     response = requests.post(url, headers=headers)
 
-    if response.status_code >=200 and response.status_code <=300:
+    if response.status_code >=200 and response.status_code <300:
         print(f'Dataset Refresh request to workspace id:{workspace_id} and dataset id:{dataset_id} sent successfully')
 
     return response
@@ -133,6 +152,25 @@ def cancel_dataset_refresh(workspace_id:str, dataset_id:str, refresh_id:str, api
 
     return response
 
+def get_all_connections(api_token:str):
+    """
+    https://learn.microsoft.com/en-us/rest/api/fabric/core/connections/list-connections?tabs=HTTP
+    scopes: Connection.Read.All or Connection.ReadWrite.All
+
+    GET https://api.fabric.microsoft.com/v1/connections
+
+
+    """
+    url = 'https://api.fabric.microsoft.com/v1/connections'
+
+    headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+    }    
+
+    response = requests.get(url, headers=headers)
+
+    return response
 
 
 # METADATA ********************
@@ -145,12 +183,6 @@ def cancel_dataset_refresh(workspace_id:str, dataset_id:str, refresh_id:str, api
 # CELL ********************
 
 # get oauth token
-kv_uri = 'https://kvfabricprodeus2rh.vault.azure.net/'
-client_id_secret = 'fuam-spn-client-id'
-tenant_id_secret = 'fuam-spn-tenant-id'
-client_secret_name = 'fuam-spn-secret'
-
-
 token = get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
 
 # METADATA ********************
@@ -163,9 +195,6 @@ token = get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client
 # CELL ********************
 
 # Get Dataset/SM Refresh Info
-workspace_id = 'a046cf0f-8dca-4b61-b95e-7adf68fb4b0a'
-dataset_id = '708da792-a344-4079-b205-61c587a51600'
-
 dataset_refresh_history = get_dataset_refresh_info(workspace_id, dataset_id, token)
 
 dataset_refresh_history
@@ -195,7 +224,7 @@ resp = start_dataset_refresh(workspace_id, dataset_id, token)
 
 # Cancel Dataset/SM Refresh
 # https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/cancel-refresh-in-group
-refresh_id = '75f6a10f-e11a-ce16-0ebc-1eaa2e6450c1'
+refresh_id = '2b2abe5c-330e-436b-bcd9-8c099254bc4a'
 
 cancel_resp = cancel_dataset_refresh(workspace_id, dataset_id, refresh_id, token)
 
