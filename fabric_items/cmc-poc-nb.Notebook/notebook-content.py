@@ -13,6 +13,11 @@
 
 # # Central Management Console Back End
 # Back End Connectivity for Central Management Console
+# Currently connecting to this semantic model: https://app.fabric.microsoft.com/groups/a046cf0f-8dca-4b61-b95e-7adf68fb4b0a/datasets/708da792-a344-4079-b205-61c587a51600/details?experience=power-bi
+# 
+# ### Updates
+# - Get all Workspaces in Tenant
+
 
 # PARAMETERS CELL ********************
 
@@ -24,7 +29,7 @@ client_secret_name = 'fuam-spn-secret'
 workspace_id = 'a046cf0f-8dca-4b61-b95e-7adf68fb4b0a'
 dataset_id = '708da792-a344-4079-b205-61c587a51600'
 
-
+url = f'https://app.fabric.microsoft.com/groups/{workspace_id}/datasets/{dataset_id}/details?experience=power-bi'
 
 # METADATA ********************
 
@@ -41,6 +46,7 @@ from azure.keyvault.secrets import SecretClient
 import os
 import notebookutils
 import pandas as pd
+import json
 
 # METADATA ********************
 
@@ -94,8 +100,11 @@ def get_dataset_refresh_info(workspace_id:str, dataset_id:str, api_token:str)->p
 
     response = requests.get(url, headers=headers)
 
-    return pd.DataFrame(response.json()['value'])
-
+    try:
+        return pd.DataFrame(response.json()['value'])
+    except:
+        return response
+        
 def start_dataset_refresh(workspace_id:str, dataset_id:str, api_token:str):
     """
     https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/refresh-dataset-in-group
@@ -172,6 +181,47 @@ def get_all_connections(api_token:str):
 
     return response
 
+def get_all_workspaces(api_token:str)-> json:
+    """
+    https://learn.microsoft.com/en-us/rest/api/fabric/admin/workspaces/list-workspaces?tabs=HTTP
+    Get all workspaces in a tenant
+    Requires Scopes: Tenant.Read.All or Tenant.ReadWrite.All
+
+    api_token:str: The API Token used to authenticate with the APIs
+    """
+    url = 'https://api.fabric.microsoft.com/v1/admin/workspaces'
+
+    headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+    }    
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code >=200 and response.status_code < 300:
+        return response.json()
+
+def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
+    """
+    https://learn.microsoft.com/en-us/rest/api/fabric/semanticmodel/items/list-semantic-models?tabs=HTTP
+    GET https://api.fabric.microsoft.com/v1/workspaces/{workspaceId}/semanticModels
+    Get all semantic models in a workspace
+    Requires Scopes: Workspace.Read.All or Workspace.ReadWrite.All
+
+    workspace_id:str: The uuid of the workspace you'd like the semantic models for
+    api_token:str: The API Token used to authenticate with the APIs
+    """
+    url = f'https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/semanticModels'
+
+    headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+    }    
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code >=200 and response.status_code < 300:
+        return response.json()
 
 # METADATA ********************
 
@@ -239,6 +289,60 @@ cancel_resp = cancel_dataset_refresh(workspace_id, dataset_id, refresh_id, token
 # CELL ********************
 
 cancel_resp.status_code
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+workspace_json = get_all_workspaces(token)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+workspace_json['workspaces']
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+dataset_response = get_all_datasets_in_workspace('21695bc6-4aeb-41ae-bbbd-93d8858e7665', token)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+type(dataset_response)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 
 # METADATA ********************
 
