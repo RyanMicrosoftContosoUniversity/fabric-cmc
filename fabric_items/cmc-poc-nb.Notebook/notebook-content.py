@@ -31,6 +31,8 @@ dataset_id = '708da792-a344-4079-b205-61c587a51600'
 
 url = f'https://app.fabric.microsoft.com/groups/{workspace_id}/datasets/{dataset_id}/details?experience=power-bi'
 
+lakehouse_tables_abfs_path = 'abfss://9d04a637-9cd3-41f2-8c4d-e3e1e18041a5@onelake.dfs.fabric.microsoft.com/ac4609b3-6e39-4b3a-9406-4f1d7941e8bd/Tables'
+
 # METADATA ********************
 
 # META {
@@ -51,6 +53,9 @@ import pandas as pd
 import json
 from typing import Optional, Dict, Any
 import logging
+from delta.tables import DeltaTable
+from pyspark.sql.functions import col
+
 
 # Configure logging for better error tracking
 logging.basicConfig(level=logging.INFO)
@@ -65,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 # CELL ********************
 
-async def get_api_token_via_akv(kv_uri:str, client_id_secret:str, tenant_id_secret:str, client_secret_name:str)->str:
+def get_api_token_via_akv(kv_uri:str, client_id_secret:str, tenant_id_secret:str, client_secret_name:str)->str:
     """
     Function to retrieve an api token used to authenticate with Microsoft Fabric APIs
 
@@ -85,7 +90,7 @@ async def get_api_token_via_akv(kv_uri:str, client_id_secret:str, tenant_id_secr
 
     return token
 
-async def get_dataset_refresh_info(workspace_id:str, dataset_id:str, api_token:str)->pd.DataFrame:
+def get_dataset_refresh_info(workspace_id:str, dataset_id:str, api_token:str)->pd.DataFrame:
     """
     https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/get-refresh-history-in-group
     scopes required: Dataset.ReadWrite.All or Dataset.Read.All
@@ -106,15 +111,14 @@ async def get_dataset_refresh_info(workspace_id:str, dataset_id:str, api_token:s
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            try:
-                return pd.DataFrame(await response.json()['value'])
-            except Exception as e:
-                logger.error(f"Error in get_dataset_refresh_info: {e}")
-                return None
+    response = requests.get(url, headers=headers)
+
+    try:
+        return pd.DataFrame(response.json()['value'])
+    except:
+        return response
         
-async def start_dataset_refresh(workspace_id:str, dataset_id:str, api_token:str):
+def start_dataset_refresh(workspace_id:str, dataset_id:str, api_token:str):
     """
     https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/refresh-dataset-in-group
     scopes required: Dataset.ReadWrite.All
@@ -135,15 +139,14 @@ async def start_dataset_refresh(workspace_id:str, dataset_id:str, api_token:str)
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers) as response:
-            if response.status_code >=200 and response.status_code <300:
-                print(f'Dataset Refresh request to workspace id:{workspace_id} and dataset id:{dataset_id} sent successfully')
-            else:
-                logger.error(f"Error in start_dataset_refresh: {response.status}")
-            return response
+    response = requests.post(url, headers=headers)
 
-async def cancel_dataset_refresh(workspace_id:str, dataset_id:str, refresh_id:str, api_token:str):
+    if response.status_code >=200 and response.status_code <300:
+        print(f'Dataset Refresh request to workspace id:{workspace_id} and dataset id:{dataset_id} sent successfully')
+
+    return response
+
+def cancel_dataset_refresh(workspace_id:str, dataset_id:str, refresh_id:str, api_token:str):
     """
     https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/cancel-refresh-in-group
     scopes required: Dataset.ReadWrite.All
@@ -164,17 +167,14 @@ async def cancel_dataset_refresh(workspace_id:str, dataset_id:str, refresh_id:st
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.delete(url, headers=headers) as response:
-            if response.status_code==409:
-                print(f'Dataset Refresh already in a completed state; cannot cancel')
-            elif response.status_code >=200 and response.status_code <300:
-                print(f'Dataset Refresh cancelled successfully')
-            else:
-                logger.error(f"Error in cancel_dataset_refresh: {response.status}")
-            return response
+    response = requests.delete(url, headers=headers)
 
-async def get_all_connections(api_token:str):
+    if response.status_code==409:
+        print(f'Dataset Refresh already in a completed state; cannot cancel')
+
+    return response
+
+def get_all_connections(api_token:str):
     """
     https://learn.microsoft.com/en-us/rest/api/fabric/core/connections/list-connections?tabs=HTTP
     scopes: Connection.Read.All or Connection.ReadWrite.All
@@ -190,15 +190,11 @@ async def get_all_connections(api_token:str):
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            if response.status_code >=200 and response.status_code < 300:
-                return await response.json()
-            else:
-                logger.error(f"Error in get_all_connections: {response.status}")
-                return None
+    response = requests.get(url, headers=headers)
 
-async def get_all_workspaces(api_token:str)-> json:
+    return response
+
+def get_all_workspaces(api_token:str)-> json:
     """
     https://learn.microsoft.com/en-us/rest/api/fabric/admin/workspaces/list-workspaces?tabs=HTTP
     Get all workspaces in a tenant
@@ -213,15 +209,12 @@ async def get_all_workspaces(api_token:str)-> json:
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            if response.status_code >=200 and response.status_code < 300:
-                return await response.json()
-            else:
-                logger.error(f"Error in get_all_workspaces: {response.status}")
-                return None
+    response = requests.get(url, headers=headers)
 
-async def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
+    if response.status_code >=200 and response.status_code < 300:
+        return response.json()
+
+def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
     """
     https://learn.microsoft.com/en-us/rest/api/fabric/semanticmodel/items/list-semantic-models?tabs=HTTP
     GET https://api.fabric.microsoft.com/v1/workspaces/{workspaceId}/semanticModels
@@ -238,13 +231,10 @@ async def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
     "Content-Type": "application/json"
     }    
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            if response.status_code >=200 and response.status_code < 300:
-                return await response.json()
-            else:
-                logger.error(f"Error in get_all_datasets_in_workspace: {response.status}")
-                return None
+    response = requests.get(url, headers=headers)
+
+    if response.status_code >=200 and response.status_code < 300:
+        return response.json()
 
 # METADATA ********************
 
@@ -256,7 +246,7 @@ async def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
 # CELL ********************
 
 # get oauth token
-token = await get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
+token = get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
 
 # METADATA ********************
 
@@ -268,7 +258,7 @@ token = await get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, 
 # CELL ********************
 
 # Get Dataset/SM Refresh Info
-dataset_refresh_history = await get_dataset_refresh_info(workspace_id, dataset_id, token)
+dataset_refresh_history = get_dataset_refresh_info(workspace_id, dataset_id, token)
 
 dataset_refresh_history
 
@@ -284,7 +274,7 @@ dataset_refresh_history
 # Start Dataset/SM Refresh
 # https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/refresh-dataset-in-group
 
-resp = await start_dataset_refresh(workspace_id, dataset_id, token)
+resp = start_dataset_refresh(workspace_id, dataset_id, token)
 
 # METADATA ********************
 
@@ -299,8 +289,7 @@ resp = await start_dataset_refresh(workspace_id, dataset_id, token)
 # https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/cancel-refresh-in-group
 refresh_id = '2b2abe5c-330e-436b-bcd9-8c099254bc4a'
 
-cancel_resp = await cancel_dataset_refresh(workspace_id, dataset_id, refresh_id, token)
-
+cancel_resp = cancel_dataset_refresh(workspace_id, dataset_id, refresh_id, token)
 
 # METADATA ********************
 
@@ -322,7 +311,7 @@ cancel_resp.status_code
 
 # CELL ********************
 
-workspace_json = await get_all_workspaces(token)
+workspace_json = get_all_workspaces(token)
 
 # METADATA ********************
 
@@ -344,7 +333,7 @@ workspace_json['workspaces']
 
 # CELL ********************
 
-dataset_response = await get_all_datasets_in_workspace('21695bc6-4aeb-41ae-bbbd-93d8858e7665', token)
+dataset_response = get_all_datasets_in_workspace('21695bc6-4aeb-41ae-bbbd-93d8858e7665', token)
 
 # METADATA ********************
 
@@ -365,14 +354,6 @@ type(dataset_response)
 # META }
 
 # CELL ********************
-
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
 
 # ASYNC API FUNCTIONS ********************
 
@@ -659,7 +640,208 @@ async def bulk_workspace_operations_async(api_token: str) -> Dict[str, Any]:
         
         return results
 
-# EXAMPLE USAGE FUNCTIONS ********************
+
+### Non-Async Functions
+def add_workspace_id_to_dataset_dict(dataset_list:list, workspace_id:str)->list:
+    """
+    Given a list, process the list
+    - select ['value']
+    - for item in dataset_list -> item['workspace_id']
+
+    dataset_list:list: The list to be processed
+    workspace_id:str: The workspace_id to be added to each dict of the list
+
+    returns:
+        list
+
+    Example:
+    {'value': [{'id': '228c82be-411b-4fa2-a6cd-a8e06cb01f63',
+   'type': 'SemanticModel',
+   'displayName': 'gold_warehouse',
+   'description': '',
+   'workspaceId': '7afc490e-115f-472c-a205-17dc6a5bee52'},
+  {'id': '1d4e18fb-f830-4aff-bb12-9fe27c5c397f',
+   'type': 'SemanticModel',
+   'displayName': 'silver_lakehouse',
+   'description': '',
+   'workspaceId': '7afc490e-115f-472c-a205-17dc6a5bee52'},
+  {'id': 'a9436752-1e0b-4ea1-bf4c-d95de9544d8b',
+   'type': 'SemanticModel',
+   'displayName': 'metadata_lh',
+   'description': '',
+   'workspaceId': '7afc490e-115f-472c-a205-17dc6a5bee52'},
+  {'id': '2e3b9d01-adc3-4b05-96a1-2c0217b1677a',
+   'type': 'SemanticModel',
+   'displayName': 'bronzeWH',
+   'description': '',
+   'workspaceId': '7afc490e-115f-472c-a205-17dc6a5bee52'}]}
+    """
+    dataset_list = dataset_list['value']
+
+    for item in dataset_list:
+        item['workspace_id'] = workspace_id
+    
+    return dataset_list
+
+def create_or_merge_datasets_tbl(lakehouse_tables_abfs_path: str, clean_datasets_list: list):
+    """
+    Create or merge into the datasets_tbl Delta table.
+    If the table exists, merge new data based on 'id'.
+    If it doesn't exist, create it.
+    """
+    df = spark.createDataFrame(clean_datasets_list)
+    table_path = f"{lakehouse_tables_abfs_path}/datasets_tbl"
+
+    if DeltaTable.isDeltaTable(spark, table_path):
+        delta_table = DeltaTable.forPath(spark, table_path)
+
+        # Merge based on 'id' (or another unique key)
+        delta_table.alias("target").merge(
+            df.alias("source"),
+            "target.id = source.id"
+     ).whenMatchedUpdateAll() \
+      .whenNotMatchedInsertAll() \
+        .execute()
+    else:
+        df.write.format("delta").mode("overwrite").save(table_path)
+
+def create_merge_workspace_tbl(lakehouse_tables_abfs_path:str, clean_workspaces_list:list):
+    """
+    Create or merge into the workspace_tbl Delta Table
+
+    """
+    df = spark.createDataFrame(clean_workspaces_list)
+    table_path = f'{lakehouse_tables_abfs_path}/workspace_tbl'
+
+    if DeltaTable.isDeltaTable(spark, table_path):
+        delta_table = DeltaTable.forPath(spark, table_path)
+
+        # merge based on id
+        delta_table.alias('target').merge(
+            df.alias('source'),
+            'target.id = source.id'
+        ).whenMatchedUpdateAll() \
+        .whenNotMatchedInsertAll()\
+        .execute()
+    else:
+        df.write.format('delta').mode('overwrite').save(table_path)
+
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# get token
+token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
+
+
+# define timeouts and host connection config
+timeout = aiohttp.ClientTimeout(total=300, connect=60)
+connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+
+
+
+async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+    # get all workspaces
+    workspaces_json = await get_all_workspaces_async(session, token)
+    
+    ### create tables (alter later to merge)
+    create_merge_workspace_tbl(lakehouse_tables_abfs_path, workspaces_json['workspaces'])
+
+    # for each workspace id in the workspaces_json['workspaces], get all the datasets/semantic models for it
+    for ws in workspaces_json['workspaces']:
+        # get all semantic models
+        ws_datasets = await get_all_datasets_in_workspace_async(session, ws['id'], token)
+
+    
+    # # Get refresh info
+    # refresh_info = await get_dataset_refresh_info_async(session, workspace_id, dataset_id, token)
+    # print("Refresh info retrieved")
+    
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+ws_list = workspaces_json['workspaces']
+
+timeout = aiohttp.ClientTimeout(total=300, connect=60)
+connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+
+async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+    ws_datasets = await get_all_datasets_in_workspace_async(session, '7afc490e-115f-472c-a205-17dc6a5bee52', token)
+
+    ### append to datasets_tbl
+    create_or_merge_datasets_tbl(lakehouse_tables_abfs_path, ws_datasets['value'])
+
+ws_list[0]['id']
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+ws_datasets
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+new_datasets_list = add_workspace_id_to_dataset_dict(ws_datasets, '7afc490e-115f-472c-a205-17dc6a5bee52')
+
+new_datasets_list
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+## test
+create_or_merge_datasets_tbl(lakehouse_tables_abfs_path, ws_datasets['value'])
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
 
 async def main_async_example():
     """
@@ -681,17 +863,45 @@ async def main_async_example():
         refresh_result = await start_dataset_refresh_async(session, workspace_id, dataset_id, token)
         print(f"Refresh start result: {refresh_result}")
     
-    # Example 2: Bulk operations
-    workspace_dataset_pairs = [
-        (workspace_id, dataset_id),
-        ('another-workspace-id', 'another-dataset-id')
-    ]
-    
-    bulk_refresh_info = await get_multiple_datasets_refresh_info_async(workspace_dataset_pairs, token)
-    print(f"Got refresh info for {len(bulk_refresh_info)} datasets")
-    
-    # Example 3: Multiple workspace operations
-    bulk_results = await bulk_workspace_operations_async(token)
-    print(f"Bulk operations completed: {list(bulk_results.keys())}")
 
-# Keep original sync functions for backward compatibility
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+main_async_example()
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# Example 2: Bulk operations
+# workspace_dataset_pairs = [
+#     (workspace_id, dataset_id),
+#     ('another-workspace-id', 'another-dataset-id')
+# ]
+
+# bulk_refresh_info = await get_multiple_datasets_refresh_info_async(workspace_dataset_pairs, token)
+# print(f"Got refresh info for {len(bulk_refresh_info)} datasets")
+
+# # Example 3: Multiple workspace operations
+# bulk_results = await bulk_workspace_operations_async(token)
+# print(f"Bulk operations completed: {list(bulk_results.keys())}")
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
