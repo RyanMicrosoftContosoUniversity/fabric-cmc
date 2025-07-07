@@ -1,0 +1,13 @@
+# Core Azure dependencies
+azure-identity>=1.15.0
+azure-keyvault-secrets>=4.7.0
+
+# HTTP client libraries
+requests>=2.31.0
+aiohttp>=3.9.0
+
+# Data processing
+pandas>=2.0.0
+
+# Notebook utilities (for Fabric/Synapse environment)
+# Note: notebookutils is provided by the Fabric/Synapse environment
