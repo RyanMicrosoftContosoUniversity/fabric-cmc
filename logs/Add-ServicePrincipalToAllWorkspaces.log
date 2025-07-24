@@ -1,0 +1,3 @@
+[2025-07-24 08:56:04] [INFO] Total shared workspaces found: 93
+[2025-07-24 08:56:04] [INFO] Adding security group to workspace 'test' ...
+[2025-07-24 08:56:05] [ERROR] Failed: Operation returned an invalid status code 'BadRequest'

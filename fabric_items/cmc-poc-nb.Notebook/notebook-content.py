@@ -695,3 +695,4 @@ async def main_async_example():
     print(f"Bulk operations completed: {list(bulk_results.keys())}")
 
 # Keep original sync functions for backward compatibility
+
