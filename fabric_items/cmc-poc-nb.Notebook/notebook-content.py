@@ -55,9 +55,9 @@ from typing import Optional, Dict, Any
 import logging
 from delta.tables import DeltaTable
 from pyspark.sql.functions import col
+from pyspark.sql.types import StructType, StructField, StringType, TimestampType, ArrayType, IntegerType
 
 
-# Configure logging for better error tracking
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -384,7 +384,7 @@ async def get_api_token_via_akv_async(kv_uri: str, client_id_secret: str, tenant
         logger.error(f"Error retrieving API token: {str(e)}")
         raise
 
-async def get_dataset_refresh_info_async(session: aiohttp.ClientSession, workspace_id: str, dataset_id: str, api_token: str) -> pd.DataFrame:
+async def get_dataset_refresh_info_async(session: aiohttp.ClientSession, workspace_id: str, dataset_id: str, schema:StructType, api_token: str) -> pd.DataFrame:
     """
     Async version of get_dataset_refresh_info
     
@@ -407,13 +407,47 @@ async def get_dataset_refresh_info_async(session: aiohttp.ClientSession, workspa
         async with session.get(url, headers=headers) as response:
             response.raise_for_status()
             data = await response.json()
-            return pd.DataFrame(data.get('value', []))
+            # return pd.DataFrame(data.get('value', []))
+            return spark.createDataFrame(data, schema=schema)
     except aiohttp.ClientError as e:
         logger.error(f"Error getting dataset refresh info: {str(e)}")
         raise
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise
+
+### DEPRECATED
+# async def get_dataset_refresh_info_async(session: aiohttp.ClientSession, workspace_id: str, dataset_id: str, api_token: str) -> pd.DataFrame:
+#     """
+#     Async version of get_dataset_refresh_info
+    
+#     session: aiohttp.ClientSession for making HTTP requests
+#     workspace_id:str: The Workspace ID where the semantic model/dataset resides
+#     dataset_id:str: The Dataset ID to get refresh info for
+#     api_token:str: The api token to authenticate with the API
+    
+#     returns:
+#         refresh_history_pd_df:pd.DataFrame: DataFrame of the refresh history
+#     """
+#     url = f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes'
+    
+#     headers = {
+#         "Authorization": f"Bearer {api_token}",
+#         "Content-Type": "application/json"
+#     }
+    
+#     try:
+#         async with session.get(url, headers=headers) as response:
+#             response.raise_for_status()
+#             data = await response.json()
+#             return pd.DataFrame(data.get('value', []))
+
+#     except aiohttp.ClientError as e:
+#         logger.error(f"Error getting dataset refresh info: {str(e)}")
+#         raise
+#     except Exception as e:
+#         logger.error(f"Unexpected error: {str(e)}")
+#         raise
 
 async def start_dataset_refresh_async(session: aiohttp.ClientSession, workspace_id: str, dataset_id: str, api_token: str) -> Dict[str, Any]:
     """
@@ -503,9 +537,11 @@ async def cancel_dataset_refresh_async(session: aiohttp.ClientSession, workspace
         logger.error(f"Error cancelling dataset refresh: {str(e)}")
         raise
 
-async def get_all_workspaces_async(session: aiohttp.ClientSession, api_token: str) -> Optional[Dict[str, Any]]:
+async def get_all_workspaces_async(session: aiohttp.ClientSession, capacity_id:str, api_token: str) -> Optional[Dict[str, Any]]:
     """
     Async version of get_all_workspaces
+
+    Modified: GET https://api.fabric.microsoft.com/v1/admin/workspaces?type={type}&capacityId={capacityId}&name={name}&state={state}&continuationToken={continuationToken}
     
     session: aiohttp.ClientSession for making HTTP requests
     api_token:str: The API Token used to authenticate with the APIs
@@ -513,7 +549,7 @@ async def get_all_workspaces_async(session: aiohttp.ClientSession, api_token: st
     returns:
         Dict containing workspace data or None if error
     """
-    url = 'https://api.fabric.microsoft.com/v1/admin/workspaces'
+    url = f'https://api.fabric.microsoft.com/v1/admin/workspaces?type=workspace&capacityId={capacity_id}'
     
     headers = {
         "Authorization": f"Bearer {api_token}",
@@ -538,21 +574,75 @@ async def get_all_datasets_in_workspace_async(session: aiohttp.ClientSession, wo
     
     returns:
         Dict containing dataset data or None if error
+
+    docs:
+    https://learn.microsoft.com/en-us/rest/api/fabric/semanticmodel/items/list-semantic-models?tabs=HTTP
     """
-    url = f'https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/semanticModels'
     
+    base_url = f"https://api.fabric.microsoft.com/v1/workspaces/{workspace_id}/semanticModels"
     headers = {
         "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+        "Accept": "application/json"
     }
-    
-    try:
-        async with session.get(url, headers=headers) as response:
-            response.raise_for_status()
-            return await response.json()
-    except aiohttp.ClientError as e:
-        logger.error(f"Error getting datasets in workspace {workspace_id}: {str(e)}")
-        raise
+
+    all_items: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+
+    while True:
+        params = {}
+        if next_token:
+            # If the API uses continuationToken; adjust if the API uses different pagination keys
+            params["continuationToken"] = next_token
+
+        logger.debug("Fetching semantic models: workspace=%s, continuationToken=%s",
+                     workspace_id, next_token)
+        async with session.get(base_url, headers=headers, params=params) as resp:
+            text = await resp.text()  # helpful for debugging unexpected content-types
+            try:
+                resp.raise_for_status()
+            except aiohttp.ClientResponseError as e:
+                logger.error("HTTP %s getting semantic models for workspace %s. Body: %s",
+                             resp.status, workspace_id, text)
+                raise
+
+            # Some endpoints return {"value":[...], "continuationToken":"..."}
+            # others might return {"items":[...]} or even a bare list.
+            try:
+                payload = await resp.json(content_type=None)
+            except Exception:
+                logger.error("Non-JSON response for workspace %s: %s", workspace_id, text)
+                raise
+
+            if isinstance(payload, list):
+                # Bare array case
+                all_items.extend(payload)
+                break
+
+            if isinstance(payload, dict):
+                items = (
+                    payload.get("value")
+                    or payload.get("items")
+                    or payload.get("data")
+                    or []
+                )
+                if not isinstance(items, list):
+                    logger.warning("Unexpected items type for workspace %s: %s",
+                                   workspace_id, type(items))
+                    items = []
+
+                all_items.extend(items)
+                # Pick the right pagination key if present
+                next_token = payload.get("continuationToken") or payload.get("nextToken")
+                if not next_token:
+                    break
+            else:
+                logger.warning("Unexpected payload type for workspace %s: %s",
+                               workspace_id, type(payload))
+                break
+
+    logger.info("Workspace %s: fetched %d semantic models", workspace_id, len(all_items))
+    return all_items
+
 
 async def get_all_connections_async(session: aiohttp.ClientSession, api_token: str) -> Dict[str, Any]:
     """
@@ -683,35 +773,89 @@ def add_workspace_id_to_dataset_dict(dataset_list:list, workspace_id:str)->list:
     
     return dataset_list
 
-def create_or_merge_datasets_tbl(lakehouse_tables_abfs_path: str, clean_datasets_list: list):
+def _add_column_to_json_def(json_def:dict, field_name:StructField, field_dtype:StructField) -> dict:
     """
-    Create or merge into the datasets_tbl Delta table.
-    If the table exists, merge new data based on 'id'.
-    If it doesn't exist, create it.
+    Add record with expected name and type and nullability
     """
-    df = spark.createDataFrame(clean_datasets_list)
-    table_path = f"{lakehouse_tables_abfs_path}/datasets_tbl"
+    print(f'Checking if {field_dtype} is equal to StructType()')
+    if field_dtype == StringType():
+        print(f'field type is StructType')
+        value = None
 
-    if DeltaTable.isDeltaTable(spark, table_path):
-        delta_table = DeltaTable.forPath(spark, table_path)
+    json_def[field_name] = value
 
-        # Merge based on 'id' (or another unique key)
-        delta_table.alias("target").merge(
-            df.alias("source"),
-            "target.id = source.id"
-     ).whenMatchedUpdateAll() \
-      .whenNotMatchedInsertAll() \
-        .execute()
-    else:
-        df.write.format("delta").mode("overwrite").save(table_path)
+    return json_def
 
-def create_merge_workspace_tbl(lakehouse_tables_abfs_path:str, clean_workspaces_list:list):
+
+def structure_table_schema(json_def:dict, schema:StructType) -> dict:
+    """
+    This is to set the schema of the table to the expected schema.  User will pass in a list of columns
+
+    args:
+    json_def = {'id': '689c98b3-bf23-4f2b-ae34-d51277bf9261',
+                'name': 'UNC-Workshop',
+                'state': 'Active',
+                'type': 'Workspace',
+                'capacityId': 'AD343E36-F335-4BA3-B261-B739F7E950B0'}
+    
+    schema = StructType([
+            StructField('capacityId', StringType(), True),
+            StructField('id', StringType(), True),
+            StructField('name', StringType(), True),
+            StructField('state', StringType(), True),
+            StructField('type', StringType(), True),
+            StructField('domain', StringType(), True)
+        ])
+
+    """
+    # create a list of column names
+    json_def_column_list = json_def.keys()
+
+    for field in schema.fields:
+        # validate each column exists
+        if field.name not in json_def_column_list:
+            print(f'Field Name: {field.name} not in schema with expected type: {field.dataType}')
+            json_def = _add_column_to_json_def(json_def, field.name, field.dataType)
+            print(f'Field Name: {field.name} added to schema')
+        
+    return json_def
+
+
+
+
+# def create_or_merge_datasets_tbl(lakehouse_tables_abfs_path: str, clean_datasets_list: list):
+#     """
+#     Create or merge into the datasets_tbl Delta table.
+#     If the table exists, merge new data based on 'id'.
+#     If it doesn't exist, create it.
+#     """
+#     df = spark.createDataFrame(clean_datasets_list)
+#     table_path = f"{lakehouse_tables_abfs_path}/datasets_tbl"
+
+#     if DeltaTable.isDeltaTable(spark, table_path):
+#         delta_table = DeltaTable.forPath(spark, table_path)
+
+#         # Merge based on 'id' (or another unique key)
+#         delta_table.alias("target").merge(
+#             df.alias("source"),
+#             "target.id = source.id"
+#      ).whenMatchedUpdateAll() \
+#       .whenNotMatchedInsertAll() \
+#         .execute()
+#     else:
+#         df.write.format("delta").mode("overwrite").save(table_path)
+
+
+def create_merge_delta_tbl(lakehouse_tables_abfss_path:str, table_name:str, clean_data_list:list, schema:StructType, merge_str:str):
     """
     Create or merge into the workspace_tbl Delta Table
 
+    lakehouse_tables_abfss_path:str: The abfss path of the lakehouse
+
+
     """
-    df = spark.createDataFrame(clean_workspaces_list)
-    table_path = f'{lakehouse_tables_abfs_path}/workspace_tbl'
+    df = spark.createDataFrame(clean_data_list, schema)
+    table_path = f'{lakehouse_tables_abfss_path}/{table_name}'
 
     if DeltaTable.isDeltaTable(spark, table_path):
         delta_table = DeltaTable.forPath(spark, table_path)
@@ -719,7 +863,7 @@ def create_merge_workspace_tbl(lakehouse_tables_abfs_path:str, clean_workspaces_
         # merge based on id
         delta_table.alias('target').merge(
             df.alias('source'),
-            'target.id = source.id'
+            merge_str
         ).whenMatchedUpdateAll() \
         .whenNotMatchedInsertAll()\
         .execute()
@@ -737,6 +881,47 @@ def create_merge_workspace_tbl(lakehouse_tables_abfs_path:str, clean_workspaces_
 
 # CELL ********************
 
+# Testing
+
+json_def = {'id': '689c98b3-bf23-4f2b-ae34-d51277bf9261',
+ 'name': 'UNC-Workshop',
+ 'state': 'Active',
+ 'type': 'Workspace',
+ 'capacityId': 'AD343E36-F335-4BA3-B261-B739F7E950B0'}
+
+schema = StructType([
+    StructField('capacityId', StringType(), True),
+    StructField('id', StringType(), True),
+    StructField('name', StringType(), True),
+    StructField('state', StringType(), True),
+    StructField('type', StringType(), True),
+    StructField('domain', StringType(), True)
+])
+
+cleaned_json_def = structure_table_schema(json_def,schema)
+
+cleaned_json_def
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+cleaned_json_def
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
 
 # METADATA ********************
@@ -748,31 +933,84 @@ token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_se
 
 # CELL ********************
 
+# current error in cleaned_workspace_json = structure_table_schema(workspaces_json['workspaces'],workspace_tbl_schema)
 # get token
 token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
 
+capacity_id = 'AD343E36-F335-4BA3-B261-B739F7E950B0'
 
 # define timeouts and host connection config
 timeout = aiohttp.ClientTimeout(total=300, connect=60)
 connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
 
+workspace_tbl_schema = StructType([
+    StructField('capacityId', StringType(), True),
+    StructField('id', StringType(), True),
+    StructField('name', StringType(), True),
+    StructField('state', StringType(), True),
+    StructField('type', StringType(), True),
+    StructField('domain', StringType(), True)
+])
+workspace_tbl_name = 'workspace_tbl'
+workspace_tbl_merge_logic = 'target.id = source.id'
 
+datasets_tbl_schema = StructType([
+    StructField('id', StringType(), True),
+    StructField('type', StringType(), True),
+    StructField('displayName', StringType(), True),
+    StructField('description', StringType(), True),
+    StructField('workspaceId', StringType(), True)
+])
+datasets_tbl_name = 'datasets_tbl'
+datasets_tbl_merge_logic = 'target.id = source.id'
+
+
+
+refresh_attempt_schema_strings = StructType([
+    StructField("attemptId", IntegerType(), True),
+    StructField("startTime", StringType(),  True),
+    StructField("endTime",   StringType(),  True),
+    StructField("type",      StringType(),  True),
+])
+
+dataset_refresh_schema = StructType([
+    StructField('requestId', StringType(), True),
+    StructField('id', StringType(), True),
+    StructField('refreshType', StringType(), True),
+    StructField('startTime', TimestampType(), True),
+    StructField('endTime', TimestampType(), True),
+    StructField('status', StringType(), True),
+    StructField('refreshAttempts', ArrayType(refresh_attempt_schema_strings), True)
+])
+
+cleaned_workspaces_json_list = []
+ws_datasets = []
 
 async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
     # get all workspaces
-    workspaces_json = await get_all_workspaces_async(session, token)
+    workspaces_json = await get_all_workspaces_async(session, capacity_id, token)
+
+    ### Clean workspaces_json
+    for workspace in workspaces_json['workspaces']:
+        cleaned_workspace_json = structure_table_schema(workspace,workspace_tbl_schema)
+        cleaned_workspaces_json_list.append(cleaned_workspace_json)
     
     ### create tables (alter later to merge)
-    create_merge_workspace_tbl(lakehouse_tables_abfs_path, workspaces_json['workspaces'])
+    create_merge_delta_tbl(lakehouse_tables_abfs_path, workspace_tbl_name, cleaned_workspaces_json_list, workspace_tbl_schema, workspace_tbl_merge_logic)
 
     # for each workspace id in the workspaces_json['workspaces], get all the datasets/semantic models for it
     for ws in workspaces_json['workspaces']:
         # get all semantic models
-        ws_datasets = await get_all_datasets_in_workspace_async(session, ws['id'], token)
+        models = await get_all_datasets_in_workspace_async(session, ws['id'], token)
+        if models:
+            ws_datasets.extend(models)
+        
 
+    ### create datasets table (merge)
+    create_merge_delta_tbl(lakehouse_tables_abfs_path, datasets_tbl_name, ws_datasets, datasets_tbl_schema, datasets_tbl_merge_logic)
     
     # # Get refresh info
-    # refresh_info = await get_dataset_refresh_info_async(session, workspace_id, dataset_id, token)
+    refresh_info = await get_dataset_refresh_info_async(session, workspace_id, dataset_id, dataset_refresh_schema, token)
     # print("Refresh info retrieved")
     
 
@@ -785,18 +1023,9 @@ async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sessio
 
 # CELL ********************
 
-ws_list = workspaces_json['workspaces']
+refresh_info_example = refresh_info
 
-timeout = aiohttp.ClientTimeout(total=300, connect=60)
-connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-
-async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-    ws_datasets = await get_all_datasets_in_workspace_async(session, '7afc490e-115f-472c-a205-17dc6a5bee52', token)
-
-    ### append to datasets_tbl
-    create_or_merge_datasets_tbl(lakehouse_tables_abfs_path, ws_datasets['value'])
-
-ws_list[0]['id']
+refresh_info_example.dtypes
 
 # METADATA ********************
 
@@ -807,7 +1036,7 @@ ws_list[0]['id']
 
 # CELL ********************
 
-ws_datasets
+refresh_info_example['refreshAttempts'].values
 
 # METADATA ********************
 
@@ -818,9 +1047,6 @@ ws_datasets
 
 # CELL ********************
 
-new_datasets_list = add_workspace_id_to_dataset_dict(ws_datasets, '7afc490e-115f-472c-a205-17dc6a5bee52')
-
-new_datasets_list
 
 # METADATA ********************
 
@@ -828,76 +1054,3 @@ new_datasets_list
 # META   "language": "python",
 # META   "language_group": "synapse_pyspark"
 # META }
-
-# CELL ********************
-
-## test
-create_or_merge_datasets_tbl(lakehouse_tables_abfs_path, ws_datasets['value'])
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-async def main_async_example():
-    """
-    Example of how to use the async functions
-    """
-    # Get token (this part is still sync due to notebookutils)
-    token = await get_api_token_via_akv_async(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
-    
-    # Example 1: Single operations
-    timeout = aiohttp.ClientTimeout(total=300, connect=60)
-    connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-    
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        # Get refresh info
-        refresh_info = await get_dataset_refresh_info_async(session, workspace_id, dataset_id, token)
-        print("Refresh info retrieved")
-        
-        # Start a refresh
-        refresh_result = await start_dataset_refresh_async(session, workspace_id, dataset_id, token)
-        print(f"Refresh start result: {refresh_result}")
-    
-
-
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-main_async_example()
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "synapse_pyspark"
-# META }
-
-# CELL ********************
-
-# Example 2: Bulk operations
-# workspace_dataset_pairs = [
-#     (workspace_id, dataset_id),
-#     ('another-workspace-id', 'another-dataset-id')
-# ]
-
-# bulk_refresh_info = await get_multiple_datasets_refresh_info_async(workspace_dataset_pairs, token)
-# print(f"Got refresh info for {len(bulk_refresh_info)} datasets")
-
-# # Example 3: Multiple workspace operations
-# bulk_results = await bulk_workspace_operations_async(token)
-# print(f"Bulk operations completed: {list(bulk_results.keys())}")
-
-# Keep original sync functions for backward compatibility
-
