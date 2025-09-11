@@ -90,6 +90,83 @@ def get_api_token_via_akv(kv_uri:str, client_id_secret:str, tenant_id_secret:str
 
     return token
 
+def admin_list_all_workspaces(capacity_id:str, api_token:str) ->dict:
+    """
+    List all workspaces in Fabric/PBI
+
+    capacity_id:str: The ID of the capacity
+
+    returns:json
+
+    https://learn.microsoft.com/en-us/rest/api/fabric/admin/workspaces/list-workspaces?tabs=HTTP
+    GET https://api.fabric.microsoft.com/v1/admin/workspaces?type={type}&capacityId={capacityId}&name={name}&state={state}&continuationToken={continuationToken}
+
+    """
+    url = f'https://api.fabric.microsoft.com/v1/admin/workspaces?type=workspace&capacityId={capacity_id}&state=active'
+
+    headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+    }    
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code >=200 and response.status_code <300:
+        print(f'ERROR: message: {response.json()}')
+
+    return response
+
+def _check_group_user_access_right(group_user_access_right:str):
+    """
+    This is used to validate the group_user_access_right value for adding user to workspace is valid
+    """
+    if group_user_access_right not in ('None', 'Member', 'Admin', 'Contributor', 'Viewer'):
+        raise ValueError(f'Invalid group_user_access_right.  Value must be one of: None, Member, Admin, Contributor, Viewer.  Value received: {group_user_access_right} ')
+
+def _check_principal_type(principal_type:str):
+    """
+    This is used to validate the principal_type value for adding user to workspace is valid
+
+    """
+    if principal_type not in ('None', 'Group', 'App'):
+        raise ValueError(f'Invalid principal_type.  Value must be one of None, User, Group, App.  Value received: {principal_type}')
+
+def add_user_to_workspace(identifier:str, group_user_access_right:str, principal_type:str, workspace_list:list, api_token:str):
+    """
+    Add group to workspace_id.  Given a list of workspace IDs add a objectID of a group to it
+
+    workspace_id:str: The workspace ID
+    identifier:str: The object ID of the Entra Group
+    group_user_access_right:str:  The accress to be granted to the ID.  Must be one of None, Member, Admin, Contributor, Viewer
+    principal_type:str: The type of principal.  Must be one of: None, User, Group, App
+
+    https://learn.microsoft.com/en-us/rest/api/power-bi/groups/add-group-user
+    POST https://api.powerbi.com/v1.0/myorg/groups/{groupId}/users
+    
+    https://api.powerbi.com/v1.0/myorg/groups/{groupId}/users
+    """
+    _check_group_user_access_right(group_user_access_right)
+    _check_principal_type(principal_type)
+
+    post_body = {
+            "identifier": identifier,
+            "groupUserAccessRight": group_user_access_right,
+            "principalType": principal_type
+        }
+
+    headers = {
+    "Authorization": f"Bearer {api_token}",
+    "Content-Type": "application/json"
+    }    
+    for workspace_id in workspace_list:
+        print(f'Attempting to add user group ID:{identifier} to workspace:{workspace_id}')
+
+        url = f'https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/users'
+
+
+        response = requests.post(url, headers=headers, json=post_body)
+        print(response.status_code)
+
 def get_dataset_refresh_info(workspace_id:str, dataset_id:str, api_token:str)->pd.DataFrame:
     """
     https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/get-refresh-history-in-group
@@ -245,8 +322,50 @@ def get_all_datasets_in_workspace(workspace_id:str, api_token:str):
 
 # CELL ********************
 
+### test
+token = get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
+capacity_id = ' AD343E36-F335-4BA3-B261-B739F7E950B0'
+
+
+workspace_json = admin_list_all_workspaces(capacity_id, api_token=token)
+
+ws_list = []
+workspace_json.json()['workspaces']
+
+for _ in workspace_json.json()['workspaces']:
+    ws_list.append(_['id'])
+
+ws_list
+
+
+ws_list = []
+workspace_json.json()['workspaces']
+
+for _ in workspace_json.json()['workspaces']:
+    ws_list.append(_['id'])
+
+for ws in ws_list:
+    print(ws)
+
+### Test def add_user_to_workspace(workspace_id:str, identifier:str, group_user_access_right:str, principal_type:str, workspace_list:list, api_token:str):
+add_user_to_workspace(identifier='054b0fcd-a031-4ee0-95d9-40f896a82879', group_user_access_right='Admin', principal_type='Group', workspace_list=ws_list, api_token=token)
+
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
 # get oauth token
 token = get_api_token_via_akv(kv_uri, client_id_secret, tenant_id_secret, client_secret_name)
+
+
+
 
 # METADATA ********************
 
@@ -1037,6 +1156,40 @@ refresh_info_example.dtypes
 # CELL ********************
 
 refresh_info_example['refreshAttempts'].values
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+def add_user_to_workspace(group_id:str, workspace_list:list, api_token:str):
+    """
+    
+    https://api.powerbi.com/v1.0/myorg/groups/{groupId}/users
+    """
+    for workspace_id in workspace_list:
+        print(f'Attempting to add user group ID:{group_id} to workspace:{workspace_id}')
+
+        url = f'https://api.powerbi.com/v1.0/myorg/groups/{group_id}/users'
+
+        post_body = {
+            "identifier": "{group_id}",
+            "groupUserAccessRight": "Admin",
+            "principalType": "Group"
+        }
+
+        headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json"
+        }    
+
+        response = requests.post(url, headers=headers, json=post_body)
+        print(response.status_code)
+
 
 # METADATA ********************
 
